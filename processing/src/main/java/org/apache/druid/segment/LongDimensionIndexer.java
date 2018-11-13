@@ -30,6 +30,7 @@ import org.apache.druid.segment.incremental.IncrementalIndex;
 import org.apache.druid.segment.incremental.IncrementalIndexRowHolder;
 
 import javax.annotation.Nullable;
+import java.nio.ByteBuffer;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
@@ -46,6 +47,27 @@ public class LongDimensionIndexer implements DimensionIndexer<Long, Long, Long>
     }
 
     return DimensionHandlerUtils.convertObjectToLong(dimValues, reportParseExceptions);
+  }
+
+  @Override
+  public long estimateRowValsSize(Object dimValues)
+  {
+    if (dimValues instanceof List) {
+      throw new UnsupportedOperationException("Numeric columns do not support multivalue rows.");
+    }
+    return Long.BYTES;
+  }
+
+  @Override
+  public long writeUnsortedEncodedKeyComponent(Object dimValues, boolean reportParseExceptions, ByteBuffer buff)
+  {
+    if (dimValues instanceof List) {
+      throw new UnsupportedOperationException("Numeric columns do not support multivalue rows.");
+    }
+
+    Long key = DimensionHandlerUtils.convertObjectToLong(dimValues, reportParseExceptions);
+    buff.putLong(buff.position(), key);
+    return Long.BYTES;
   }
 
   @Override

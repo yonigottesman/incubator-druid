@@ -90,13 +90,13 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
           .build();
 
   protected final long minTimestamp;
-  private final Granularity gran;
+  protected final Granularity gran;
   private final boolean rollup;
   private final List<Function<InputRow, InputRow>> rowTransformers;
   protected final boolean reportParseExceptions;
   private final Metadata metadata;
 
-  private final Map<String, DimensionDesc> dimensionDescs;
+  protected final Map<String, DimensionDesc> dimensionDescs;
   protected final List<DimensionDesc> dimensionDescsList;
   protected final Map<String, ColumnCapabilitiesImpl> columnCapabilities;
   protected final AtomicInteger numEntries = new AtomicInteger();
@@ -710,7 +710,7 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
   }
 
   @GuardedBy("dimensionDescs")
-  private DimensionDesc addNewDimension(String dim, ColumnCapabilitiesImpl capabilities, DimensionHandler handler)
+  protected DimensionDesc addNewDimension(String dim, ColumnCapabilitiesImpl capabilities, DimensionHandler handler)
   {
     DimensionDesc desc = new DimensionDesc(dimensionDescs.size(), dim, capabilities, handler);
     dimensionDescs.put(dim, desc);

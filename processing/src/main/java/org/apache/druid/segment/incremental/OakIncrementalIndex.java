@@ -19,12 +19,18 @@
 
 package org.apache.druid.segment.incremental;
 
+import com.google.common.base.Strings;
 import com.google.common.collect.Iterators;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import org.apache.druid.data.input.InputRow;
 import org.apache.druid.data.input.MapBasedRow;
 import org.apache.druid.data.input.Row;
+import org.apache.druid.java.util.common.DateTimes;
+import org.apache.druid.java.util.common.IAE;
+import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.java.util.common.parsers.ParseException;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.BufferAggregator;
 import org.apache.druid.query.aggregation.PostAggregator;
@@ -37,6 +43,7 @@ import com.oath.oak.OakRBuffer;
 import com.oath.oak.OakCloseableIterator;
 
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.List;
@@ -44,6 +51,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import org.apache.druid.segment.DimensionHandler;
+import org.apache.druid.segment.DimensionHandlerUtils;
 import org.apache.druid.segment.DimensionIndexer;
 import org.apache.druid.segment.column.ColumnCapabilitiesImpl;
 import org.apache.druid.segment.column.ValueType;
@@ -410,6 +418,11 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
   @Override
   public IncrementalIndexAddResult add(InputRow row, boolean skipMaxRowsInMemoryCheck) throws IndexSizeExceededException
   {
+    row = formatRow(row);
+    if (row.getTimestampFromEpoch() < minTimestamp) {
+      throw new IAE("Cannot add row[%s] because it is below the minTimestamp[%s]", row, DateTimes.utc(minTimestamp));
+    }
+
     IncrementalIndexRowResult incrementalIndexRowResult = toIncrementalIndexRow(row);
     final int rv = addToOak(
             row,
@@ -420,6 +433,43 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
     );
     updateMaxIngestedTime(row.getTimestamp());
     return new IncrementalIndexAddResult(rv, 0, null);
+  }
+
+  OakIncrementalIndexInputRow toOakIncrementalIndexInputRow(InputRow row)
+  {
+    row = formatRow(row);
+    if (row.getTimestampFromEpoch() < minTimestamp) {
+      throw new IAE("Cannot add row[%s] because it is below the minTimestamp[%s]", row, DateTimes.utc(minTimestamp));
+    }
+
+    List<String> rowDimensions = row.getDimensions();
+    OakIncrementalIndexInputRow oakIncrementalIndexInputRow = new OakIncrementalIndexInputRow(row, rowDimensions);
+
+    // Updating the dimensionDescs map with new dimensions
+    synchronized (dimensionDescs) {
+
+      for (String dimension : rowDimensions) {
+        if (Strings.isNullOrEmpty(dimension)) {
+          continue;
+        }
+
+        if (!dimensionDescs.containsKey(dimension)) {
+          ColumnCapabilitiesImpl capabilities = columnCapabilities.get(dimension);
+          if (capabilities == null) {
+            capabilities = new ColumnCapabilitiesImpl();
+            // For schemaless type discovery, assume everything is a String for now, can change later.
+            capabilities.setType(ValueType.STRING);
+            capabilities.setDictionaryEncoded(true);
+            capabilities.setHasBitmapIndexes(true);
+            columnCapabilities.put(dimension, capabilities);
+          }
+          DimensionHandler handler = DimensionHandlerUtils.getHandlerFromCapabilities(dimension, capabilities, null);
+          addNewDimension(dimension, capabilities, handler);
+        }
+      }
+    }
+
+    return oakIncrementalIndexInputRow;
   }
 
   private IncrementalIndexRow getMinIncrementalIndexRow()

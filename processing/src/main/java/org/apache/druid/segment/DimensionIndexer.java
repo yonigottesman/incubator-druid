@@ -27,6 +27,7 @@ import org.apache.druid.segment.incremental.IncrementalIndex;
 import org.apache.druid.segment.incremental.IncrementalIndexRowHolder;
 
 import javax.annotation.Nullable;
+import java.nio.ByteBuffer;
 
 /**
  * Processing related interface
@@ -126,6 +127,26 @@ public interface DimensionIndexer
    * @return An array containing an encoded representation of the input row value.
    */
   EncodedKeyComponentType processRowValsToUnsortedEncodedKeyComponent(Object dimValues, boolean reportParseExceptions);
+
+  /**
+   * Gives the estimated size in bytes for the given row value
+   *
+   * @param dimValues Single row val to process
+   *
+   * @return the estimated size in bytes of the row value
+   */
+  long estimateRowValsSize(Object dimValues);
+
+  /**
+   * Writes the given row value to the given ByteBuffer
+   *
+   * @param dimValues Single row val to process
+   * @param reportParseExceptions
+   * @param buff The target ByteBuffer
+   *
+   * @return the size written to the ByteBuffer, in bytes
+   */
+  long writeUnsortedEncodedKeyComponent(Object dimValues, boolean reportParseExceptions, ByteBuffer buff);
 
   /**
    * Gives the estimated size in bytes for the given key

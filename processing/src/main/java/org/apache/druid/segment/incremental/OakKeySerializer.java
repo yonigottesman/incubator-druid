@@ -22,6 +22,10 @@ package org.apache.druid.segment.incremental;
 import java.util.List;
 import java.nio.ByteBuffer;
 
+import org.apache.druid.data.input.InputRow;
+import org.apache.druid.java.util.common.granularity.Granularity;
+import org.apache.druid.segment.DimensionIndexer;
+import org.apache.druid.segment.column.ColumnCapabilitiesImpl;
 import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.incremental.IncrementalIndex.DimensionDesc;
 import com.oath.oak.OakSerializer;
@@ -29,10 +33,14 @@ import com.oath.oak.OakSerializer;
 public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
 {
   private List<DimensionDesc> dimensionDescsList;
+  Granularity gran;
+  long minTimestamp;
 
-  public OakKeySerializer(List<DimensionDesc> dimensionDescsList)
+  public OakKeySerializer(List<DimensionDesc> dimensionDescsList, Granularity gran, long minTimestamp)
   {
     this.dimensionDescsList = dimensionDescsList;
+    this.gran = gran;
+    this.minTimestamp = minTimestamp;
   }
 
   @Override
@@ -102,6 +110,25 @@ public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
 
   }
 
+  public void serializeNew(IncrementalIndexRow incrementalIndexRow, ByteBuffer buff)
+  {
+    OakIncrementalIndexInputRow row = (OakIncrementalIndexInputRow) incrementalIndexRow;
+    long timestamp = getTimeStamp(row);
+
+  }
+
+  private long getTimeStamp(OakIncrementalIndexInputRow row)
+  {
+    InputRow inputRow = row.inputRow;
+
+    long truncated = 0;
+    if (inputRow.getTimestamp() != null) {
+      truncated = gran.bucketStart(inputRow.getTimestamp()).getMillis();
+    }
+
+    return Math.max(truncated, minTimestamp);
+  }
+
   @Override
   public IncrementalIndexRow deserialize(ByteBuffer serializedKey)
   {
@@ -119,22 +146,21 @@ public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
   @Override
   public int calculateSize(IncrementalIndexRow incrementalIndexRow)
   {
-    Object[] dims = incrementalIndexRow.getDims();
-    if (dims == null) {
-      return Long.BYTES + 2 * Integer.BYTES;
-    }
+    OakIncrementalIndexInputRow row = (OakIncrementalIndexInputRow) incrementalIndexRow;
+    InputRow inputRow = row.inputRow;
+    List<String> rowDimensions = row.rowDimensions;
+    List<Object> rawDimensions = row.rawDimensions;
 
-    // When the dimensionDesc's capabilities are of type ValueType.STRING,
-    // the object in timeAndDims.dims is of type int[].
-    // In this case, we need to know the array size before allocating the ByteBuffer.
     int sumOfArrayLengths = 0;
-    for (int i = 0; i < dims.length; i++) {
-      Object dim = dims[i];
-      if (dim == null) {
-        continue;
-      }
-      if (OakIncrementalIndex.getDimValueType(i, dimensionDescsList) == ValueType.STRING) {
-        sumOfArrayLengths += ((int[]) dim).length;
+    for (int i = 0; i < rowDimensions.size(); i++) {
+      Object value = inputRow.getRaw(rowDimensions.get(i));
+      rawDimensions.add(i, value);
+      DimensionDesc dimensionDesc = dimensionDescsList.get(i);
+      if (dimensionDesc != null) {
+        ColumnCapabilitiesImpl capabilities = dimensionDesc.getCapabilities();
+        if (capabilities != null && capabilities.getType() == ValueType.STRING) {
+          sumOfArrayLengths += estimateStringDimSize(value);
+        }
       }
     }
 
@@ -145,7 +171,23 @@ public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
     // 4. the serialization of each dim
     // 5. the array (for dims with capabilities of a String ValueType)
     int dimCapacity = OakIncrementalIndex.ALLOC_PER_DIM;
-    int allocSize = Long.BYTES + 2 * Integer.BYTES + dimCapacity * dims.length + Integer.BYTES * sumOfArrayLengths;
+    int allocSize = Long.BYTES + 2 * Integer.BYTES + dimCapacity * rowDimensions.size() + Integer.BYTES * sumOfArrayLengths;
     return allocSize;
+  }
+
+  public long estimateStringDimSize(Object dimValues)
+  {
+    if (dimValues == null) {
+      return Integer.BYTES;
+    } else if (dimValues instanceof List) {
+      List<Object> dimValuesList = (List) dimValues;
+      if (dimValuesList.isEmpty()) {
+        return 0;
+      } else {
+        return Integer.BYTES * dimValuesList.size();
+      }
+    } else {
+      return Integer.BYTES;
+    }
   }
 }

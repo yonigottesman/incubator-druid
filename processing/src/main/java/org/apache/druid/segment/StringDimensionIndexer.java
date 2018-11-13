@@ -50,6 +50,7 @@ import org.apache.druid.segment.incremental.IncrementalIndexRow;
 import org.apache.druid.segment.incremental.IncrementalIndexRowHolder;
 
 import javax.annotation.Nullable;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.Iterator;
@@ -295,6 +296,85 @@ public class StringDimensionIndexer implements DimensionIndexer<Integer, int[], 
     }
 
     return encodedDimensionValues;
+  }
+
+  @Override
+  public long estimateRowValsSize(Object dimValues)
+  {
+    if (dimValues == null) {
+      return Integer.BYTES;
+    } else if (dimValues instanceof List) {
+      List<Object> dimValuesList = (List) dimValues;
+      if (dimValuesList.isEmpty()) {
+        return 0;
+      } else {
+        return Integer.BYTES * dimValuesList.size();
+      }
+    } else {
+      return Integer.BYTES;
+    }
+  }
+
+  @Override
+  public long writeUnsortedEncodedKeyComponent(Object dimValues, boolean reportParseExceptions, ByteBuffer buff)
+  {
+    final int oldDictSize = dimLookup.size();
+    long size = 0;
+
+    if (dimValues == null) {
+      final int nullId = dimLookup.getId(null);
+      if (nullId == ABSENT_VALUE_ID) {
+        buff.putInt(buff.position(), dimLookup.add(null));
+      } else {
+        buff.putInt(buff.position(), nullId);
+      }
+      size = Integer.BYTES;
+    } else if (dimValues instanceof List) {
+      List<Object> dimValuesList = (List) dimValues;
+      if (dimValuesList.isEmpty()) {
+        dimLookup.add(null);
+      } else if (dimValuesList.size() == 1) {
+        buff.putInt(buff.position(), dimLookup.add(emptyToNullIfNeeded(dimValuesList.get(0))));
+        size = Integer.BYTES;
+      } else {
+        hasMultipleValues = true;
+        final String[] dimensionValues = new String[dimValuesList.size()];
+        for (int i = 0; i < dimValuesList.size(); i++) {
+          dimensionValues[i] = emptyToNullIfNeeded(dimValuesList.get(i));
+        }
+        if (multiValueHandling.needSorting()) {
+          // Sort multival row by their unencoded values first.
+          Arrays.sort(dimensionValues, Comparators.naturalNullsFirst());
+        }
+
+        int prevId = -1;
+        int pos = 0;
+        for (String dimensionValue : dimensionValues) {
+          if (multiValueHandling != MultiValueHandling.SORTED_SET) {
+            buff.putInt(buff.position() + pos * Integer.BYTES, dimLookup.add(dimensionValue));
+            pos++;
+            continue;
+          }
+          int index = dimLookup.add(dimensionValue);
+          if (index != prevId) {
+            prevId = index;
+            buff.putInt(buff.position() + pos * Integer.BYTES, index);
+            pos++;
+          }
+        }
+        size = Integer.BYTES * pos;
+      }
+    } else {
+      buff.putInt(buff.position(), dimLookup.add(emptyToNullIfNeeded(dimValues)));
+      size = Integer.BYTES;
+    }
+
+    // If dictionary size has changed, the sorted lookup is no longer valid.
+    if (oldDictSize != dimLookup.size()) {
+      sortedLookup = null;
+    }
+
+    return size;
   }
 
   @Override
