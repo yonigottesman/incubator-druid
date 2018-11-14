@@ -34,8 +34,8 @@ public class IncrementalIndexRow
 {
   public static final int EMPTY_ROW_INDEX = -1;
 
-  private long timestamp;
-  private Object[] dims;
+  protected long timestamp;
+  protected Object[] dims;
   protected List<IncrementalIndex.DimensionDesc> dimensionDescsList;
 
   /**
@@ -44,7 +44,7 @@ public class IncrementalIndexRow
    * improve locality, and avoid boxing of rowIndex as Integer, when stored in JDK collection:
    * {@link ExternalDataIncrementalIndex.RollupFactsHolder} needs concurrent collections, that are not present in fastutil.
    */
-  private int rowIndex;
+  protected int rowIndex;
   private long dimsKeySize;
 
   protected IncrementalIndexRow() {}

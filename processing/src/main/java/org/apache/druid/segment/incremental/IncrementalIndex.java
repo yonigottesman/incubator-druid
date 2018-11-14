@@ -219,7 +219,6 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
       return setSimpleTestingIndexSchema(null, metrics);
     }
 
-
     /**
      * A helper method to set a simple index schema with controllable metrics and rollup, and default values for the
      * other parameters. Note that this method is normally used for testing and benchmarking; it is unlikely that you
@@ -348,6 +347,11 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
   protected abstract double getMetricDoubleValue(IncrementalIndexRow incrementalIndexRow, int aggIndex);
 
   protected abstract boolean isNull(IncrementalIndexRow incrementalIndexRow, int aggIndex);
+
+  public long getMinTimestamp()
+  {
+    return minTimestamp;
+  }
 
   static class IncrementalIndexRowResult
   {

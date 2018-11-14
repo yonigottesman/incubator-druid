@@ -21,16 +21,14 @@ package org.apache.druid.segment.incremental;
 
 import com.google.common.base.Strings;
 import com.google.common.collect.Iterators;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import org.apache.druid.data.input.InputRow;
 import org.apache.druid.data.input.MapBasedRow;
 import org.apache.druid.data.input.Row;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.java.util.common.IAE;
-import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.StringUtils;
-import org.apache.druid.java.util.common.parsers.ParseException;
+import org.apache.druid.java.util.common.granularity.Granularity;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.BufferAggregator;
 import org.apache.druid.query.aggregation.PostAggregator;
@@ -43,7 +41,6 @@ import com.oath.oak.OakRBuffer;
 import com.oath.oak.OakCloseableIterator;
 
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.List;
@@ -135,6 +132,11 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
   public int getLastRowIndex()
   {
     return this.rowIndexGenerator.get();
+  }
+
+  public Granularity getGranularity()
+  {
+    return gran;
   }
 
   @Override
@@ -337,7 +339,7 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
       OakCloseableIterator<OakRBuffer> keysIterator = bufferView.keysIterator();
       return () -> Iterators.transform(
           keysIterator,
-          oakRBuffer -> new OakIncrementalIndexRow(oakRBuffer, dimensionDescsList)
+          oakRBuffer -> new OakIncrementalIndexReadOnlyRow(oakRBuffer, dimensionDescsList)
       );
 
 
@@ -435,18 +437,21 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
     return new IncrementalIndexAddResult(rv, 0, null);
   }
 
-  OakIncrementalIndexInputRow toOakIncrementalIndexInputRow(InputRow row)
+  OakIncrementalIndexRow toOakIncrementalIndexInputRow(InputRow row)
   {
+    int dimsLength;
     row = formatRow(row);
     if (row.getTimestampFromEpoch() < minTimestamp) {
       throw new IAE("Cannot add row[%s] because it is below the minTimestamp[%s]", row, DateTimes.utc(minTimestamp));
     }
 
     List<String> rowDimensions = row.getDimensions();
-    OakIncrementalIndexInputRow oakIncrementalIndexInputRow = new OakIncrementalIndexInputRow(row, rowDimensions);
+
 
     // Updating the dimensionDescs map with new dimensions
     synchronized (dimensionDescs) {
+
+      dimsLength = dimensionDescs.size();
 
       for (String dimension : rowDimensions) {
         if (Strings.isNullOrEmpty(dimension)) {
@@ -465,10 +470,13 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
           }
           DimensionHandler handler = DimensionHandlerUtils.getHandlerFromCapabilities(dimension, capabilities, null);
           addNewDimension(dimension, capabilities, handler);
+          dimsLength++;
         }
       }
     }
+    //TODO: handle dimensions that occur more than once in the row
 
+    OakIncrementalIndexRow oakIncrementalIndexInputRow = new OakIncrementalIndexRow(row, dimsLength);
     return oakIncrementalIndexInputRow;
   }
 

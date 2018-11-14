@@ -22,10 +22,7 @@ package org.apache.druid.segment.incremental;
 import java.util.List;
 import java.nio.ByteBuffer;
 
-import org.apache.druid.data.input.InputRow;
-import org.apache.druid.java.util.common.granularity.Granularity;
 import org.apache.druid.segment.DimensionIndexer;
-import org.apache.druid.segment.column.ColumnCapabilitiesImpl;
 import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.incremental.IncrementalIndex.DimensionDesc;
 import com.oath.oak.OakSerializer;
@@ -33,22 +30,18 @@ import com.oath.oak.OakSerializer;
 public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
 {
   private List<DimensionDesc> dimensionDescsList;
-  Granularity gran;
-  long minTimestamp;
 
-  public OakKeySerializer(List<DimensionDesc> dimensionDescsList, Granularity gran, long minTimestamp)
+  public OakKeySerializer(List<DimensionDesc> dimensionDescsList)
   {
     this.dimensionDescsList = dimensionDescsList;
-    this.gran = gran;
-    this.minTimestamp = minTimestamp;
   }
 
   @Override
   public void serialize(IncrementalIndexRow incrementalIndexRow, ByteBuffer buff)
   {
+    OakIncrementalIndexRow oakIncrementalIndexRow = (OakIncrementalIndexRow) incrementalIndexRow;
     long timestamp = incrementalIndexRow.getTimestamp();
-    Object[] dims = incrementalIndexRow.getDims();
-    int dimsLength = (dims == null ? 0 : dims.length);
+    int dimsLength = oakIncrementalIndexRow.getDimsLength();
     int rowIndex = incrementalIndexRow.getRowIndex();
 
     // calculating buffer indexes for writing the key data
@@ -76,57 +69,76 @@ public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
     buff.putInt(rowIndexIndex, rowIndex);
     for (int i = 0; i < dimsLength; i++) {
       ValueType valueType = OakIncrementalIndex.getDimValueType(i, dimensionDescsList);
-      if (valueType == null || dims[i] == null) {
+      if (valueType == null) {
         buff.putInt(dimsIndex, noDim);
       } else {
         buff.putInt(dimsIndex + valueTypeOffset, valueType.ordinal());
-        switch (valueType) {
-          case FLOAT:
-            buff.putFloat(dimsIndex + dataOffset, (Float) dims[i]);
-            break;
-          case DOUBLE:
-            buff.putDouble(dimsIndex + dataOffset, (Double) dims[i]);
-            break;
-          case LONG:
-            buff.putLong(dimsIndex + dataOffset, (Long) dims[i]);
-            break;
-          case STRING:
-            int[] arr = (int[]) dims[i];
-            buff.putInt(dimsIndex + arrayIndexOffset, dimsArrayOffset);
-            buff.putInt(dimsIndex + arrayLengthOffset, arr.length);
-            for (int arrIndex = 0; arrIndex < arr.length; arrIndex++) {
-              buff.putInt(dimsArraysIndex + arrIndex * Integer.BYTES, arr[arrIndex]);
-            }
-            dimsArraysIndex += (arr.length * Integer.BYTES);
-            dimsArrayOffset += (arr.length * Integer.BYTES);
-            break;
-          default:
+        Object dim = oakIncrementalIndexRow.getExistingDim(i);
+        if (dim != null) {
+
+          buff.putInt(dimsIndex + valueTypeOffset, valueType.ordinal());
+          switch (valueType) {
+            case FLOAT:
+              buff.putFloat(dimsIndex + dataOffset, (Float) dim);
+              break;
+            case DOUBLE:
+              buff.putDouble(dimsIndex + dataOffset, (Double) dim);
+              break;
+            case LONG:
+              buff.putLong(dimsIndex + dataOffset, (Long) dim);
+              break;
+            case STRING:
+              int[] arr = (int[]) dim;
+              buff.putInt(dimsIndex + arrayIndexOffset, dimsArrayOffset);
+              buff.putInt(dimsIndex + arrayLengthOffset, arr.length);
+              for (int arrIndex = 0; arrIndex < arr.length; arrIndex++) {
+                buff.putInt(dimsArraysIndex + arrIndex * Integer.BYTES, arr[arrIndex]);
+              }
+              dimsArraysIndex += (arr.length * Integer.BYTES);
+              dimsArrayOffset += (arr.length * Integer.BYTES);
+              break;
+            default:
+              buff.putInt(dimsIndex, noDim);
+          }
+
+
+        } else {
+          DimensionDesc desc = dimensionDescsList.get(i);
+          if (desc == null) { // assuming the DimensionDesc has already been initialized
             buff.putInt(dimsIndex, noDim);
+          } else {
+            DimensionIndexer indexer = desc.getIndexer();
+            Object rawDim = oakIncrementalIndexRow.getRawDim(i);
+            if (rawDim == null) {
+              buff.putInt(dimsIndex, noDim);
+            } else {
+              if (valueType == ValueType.FLOAT || valueType == ValueType.DOUBLE || valueType == ValueType.LONG) {
+                ByteBuffer chunk = buff.duplicate();
+                chunk.position(dimsIndex + dataOffset);
+                chunk.limit(dimsIndex + dataOffset + dimCapacity);
+                chunk = chunk.slice();
+                indexer.writeUnsortedEncodedKeyComponent(rawDim, false, chunk);
+              } else if (valueType == ValueType.STRING) {
+                buff.putInt(dimsIndex + arrayIndexOffset, dimsArrayOffset);
+                ByteBuffer chunk = buff.duplicate();
+                chunk.position(dimsArraysIndex);
+                chunk.limit(dimsArraysIndex + oakIncrementalIndexRow.calcStringDimSize(i));
+                chunk = chunk.slice();
+                int arrSize = (int) indexer.writeUnsortedEncodedKeyComponent(rawDim, false, chunk);
+                buff.putInt(dimsIndex + arrayLengthOffset, arrSize / Integer.BYTES);
+                dimsArraysIndex += arrSize;
+                dimsArrayOffset += arrSize;
+              } else {
+                buff.putInt(dimsIndex, noDim);
+              }
+            }
+          }
         }
       }
 
       dimsIndex += dimCapacity;
     }
 
-  }
-
-  public void serializeNew(IncrementalIndexRow incrementalIndexRow, ByteBuffer buff)
-  {
-    OakIncrementalIndexInputRow row = (OakIncrementalIndexInputRow) incrementalIndexRow;
-    long timestamp = getTimeStamp(row);
-
-  }
-
-  private long getTimeStamp(OakIncrementalIndexInputRow row)
-  {
-    InputRow inputRow = row.inputRow;
-
-    long truncated = 0;
-    if (inputRow.getTimestamp() != null) {
-      truncated = gran.bucketStart(inputRow.getTimestamp()).getMillis();
-    }
-
-    return Math.max(truncated, minTimestamp);
   }
 
   @Override
@@ -146,48 +158,7 @@ public class OakKeySerializer implements OakSerializer<IncrementalIndexRow>
   @Override
   public int calculateSize(IncrementalIndexRow incrementalIndexRow)
   {
-    OakIncrementalIndexInputRow row = (OakIncrementalIndexInputRow) incrementalIndexRow;
-    InputRow inputRow = row.inputRow;
-    List<String> rowDimensions = row.rowDimensions;
-    List<Object> rawDimensions = row.rawDimensions;
-
-    int sumOfArrayLengths = 0;
-    for (int i = 0; i < rowDimensions.size(); i++) {
-      Object value = inputRow.getRaw(rowDimensions.get(i));
-      rawDimensions.add(i, value);
-      DimensionDesc dimensionDesc = dimensionDescsList.get(i);
-      if (dimensionDesc != null) {
-        ColumnCapabilitiesImpl capabilities = dimensionDesc.getCapabilities();
-        if (capabilities != null && capabilities.getType() == ValueType.STRING) {
-          sumOfArrayLengths += estimateStringDimSize(value);
-        }
-      }
-    }
-
-    // The ByteBuffer will contain:
-    // 1. the timeStamp
-    // 2. dims.length
-    // 3. rowIndex (used for Plain mode only)
-    // 4. the serialization of each dim
-    // 5. the array (for dims with capabilities of a String ValueType)
-    int dimCapacity = OakIncrementalIndex.ALLOC_PER_DIM;
-    int allocSize = Long.BYTES + 2 * Integer.BYTES + dimCapacity * rowDimensions.size() + Integer.BYTES * sumOfArrayLengths;
-    return allocSize;
-  }
-
-  public long estimateStringDimSize(Object dimValues)
-  {
-    if (dimValues == null) {
-      return Integer.BYTES;
-    } else if (dimValues instanceof List) {
-      List<Object> dimValuesList = (List) dimValues;
-      if (dimValuesList.isEmpty()) {
-        return 0;
-      } else {
-        return Integer.BYTES * dimValuesList.size();
-      }
-    } else {
-      return Integer.BYTES;
-    }
+    OakIncrementalIndexRow oakIncrementalIndexRow = (OakIncrementalIndexRow) incrementalIndexRow;
+    return (int) oakIncrementalIndexRow.estimateBytesInMemory();
   }
 }
