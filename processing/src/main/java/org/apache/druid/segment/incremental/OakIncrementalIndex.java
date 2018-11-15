@@ -425,11 +425,11 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
       throw new IAE("Cannot add row[%s] because it is below the minTimestamp[%s]", row, DateTimes.utc(minTimestamp));
     }
 
-    IncrementalIndexRowResult incrementalIndexRowResult = toIncrementalIndexRow(row);
+    OakIncrementalIndexRow oakIncrementalIndexRow = toOakIncrementalIndexRow(row);
     final int rv = addToOak(
             row,
             numEntries,
-            incrementalIndexRowResult.getIncrementalIndexRow(),
+            oakIncrementalIndexRow,
             in,
             skipMaxRowsInMemoryCheck
     );
@@ -437,7 +437,7 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
     return new IncrementalIndexAddResult(rv, 0, null);
   }
 
-  OakIncrementalIndexRow toOakIncrementalIndexInputRow(InputRow row)
+  OakIncrementalIndexRow toOakIncrementalIndexRow(InputRow row)
   {
     int dimsLength;
     row = formatRow(row);
@@ -476,7 +476,7 @@ public class OakIncrementalIndex extends InternalDataIncrementalIndex<BufferAggr
     }
     //TODO: handle dimensions that occur more than once in the row
 
-    OakIncrementalIndexRow oakIncrementalIndexInputRow = new OakIncrementalIndexRow(row, dimsLength);
+    OakIncrementalIndexRow oakIncrementalIndexInputRow = new OakIncrementalIndexRow(row, dimsLength, this);
     return oakIncrementalIndexInputRow;
   }
 

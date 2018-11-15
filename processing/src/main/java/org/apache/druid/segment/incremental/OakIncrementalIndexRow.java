@@ -26,9 +26,9 @@ import org.apache.druid.segment.column.ValueType;
 import org.apache.druid.segment.incremental.IncrementalIndex.DimensionDesc;
 
 import java.util.List;
-import java.util.ArrayList;
 
-public class OakIncrementalIndexRow extends IncrementalIndexRow {
+public class OakIncrementalIndexRow extends IncrementalIndexRow
+{
 
   public static final long EMPTY_TIME_STAMP = -1;
   protected OakIncrementalIndex index;
@@ -36,14 +36,16 @@ public class OakIncrementalIndexRow extends IncrementalIndexRow {
   private int dimsLength;
   private Object[] rawDims;
 
-  public OakIncrementalIndexRow(InputRow inputRow, int dimsLength)
+  public OakIncrementalIndexRow(InputRow inputRow, int dimsLength, OakIncrementalIndex index)
   {
     this.timestamp = EMPTY_TIME_STAMP;
+    this.index = index;
     this.inputRow = inputRow;
     this.dimsLength = dimsLength;
     this.dims = null;
     this.rawDims = null;
     this.rowIndex = EMPTY_ROW_INDEX;
+    this.dimensionDescsList = index.dimensionDescsList;
   }
 
   @Override
