@@ -275,7 +275,7 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
     this.deserializeComplexMetrics = deserializeComplexMetrics;
     this.reportParseExceptions = reportParseExceptions;
 
-    this.columnCapabilities = new HashMap<>();
+    this.columnCapabilities = new ConcurrentHashMap<>();
     this.metadata = new Metadata(
         null,
         getCombiningAggregators(metrics),
@@ -294,7 +294,8 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
     }
 
     DimensionsSpec dimensionsSpec = incrementalIndexSchema.getDimensionsSpec();
-    this.dimensionDescs = Maps.newLinkedHashMap();
+    // Order is important so we need an instance of ConcurrentNavigableMap, not just ConcurrentMap
+    this.dimensionDescs = new ConcurrentSkipListMap<>();
 
     this.dimensionDescsList = new ArrayList<>();
     for (DimensionSchema dimSchema : dimensionsSpec.getDimensions()) {
@@ -644,91 +645,65 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
 
     final List<String> rowDimensions = row.getDimensions();
 
-    Object[] dims;
-    List<Object> overflow = null;
+    Map<Integer, Object> rowDims = new HashMap<>();
     long dimsKeySize = 0;
     List<String> parseExceptionMessages = new ArrayList<>();
-    synchronized (dimensionDescs) {
-      dims = new Object[dimensionDescs.size()];
-      for (String dimension : rowDimensions) {
-        if (Strings.isNullOrEmpty(dimension)) {
-          continue;
-        }
-        boolean wasNewDim = false;
-        ColumnCapabilitiesImpl capabilities;
-        DimensionDesc desc = dimensionDescs.get(dimension);
-        if (desc != null) {
-          capabilities = desc.getCapabilities();
-        } else {
-          wasNewDim = true;
-          capabilities = columnCapabilities.get(dimension);
-          if (capabilities == null) {
-            capabilities = new ColumnCapabilitiesImpl();
-            // For schemaless type discovery, assume everything is a String for now, can change later.
-            capabilities.setType(ValueType.STRING);
-            capabilities.setDictionaryEncoded(true);
-            capabilities.setHasBitmapIndexes(true);
-            columnCapabilities.put(dimension, capabilities);
-          }
-          DimensionHandler handler = DimensionHandlerUtils.getHandlerFromCapabilities(dimension, capabilities, null);
-          desc = addNewDimension(dimension, capabilities, handler);
-        }
-        DimensionHandler handler = desc.getHandler();
-        DimensionIndexer indexer = desc.getIndexer();
-        Object dimsKey = null;
-        try {
-          dimsKey = indexer.processRowValsToUnsortedEncodedKeyComponent(
-              row.getRaw(dimension),
-              true
-          );
-        }
-        catch (ParseException pe) {
-          parseExceptionMessages.add(pe.getMessage());
-        }
-        dimsKeySize += indexer.estimateEncodedKeyComponentSize(dimsKey);
-        // Set column capabilities as data is coming in
-        if (!capabilities.hasMultipleValues() &&
-            dimsKey != null &&
-            handler.getLengthOfEncodedKeyComponent(dimsKey) > 1) {
-          capabilities.setHasMultipleValues(true);
-        }
-
-        if (wasNewDim) {
-          if (overflow == null) {
-            overflow = new ArrayList<>();
-          }
-          overflow.add(dimsKey);
-        } else if (desc.getIndex() > dims.length || dims[desc.getIndex()] != null) {
-          /*
-           * index > dims.length requires that we saw this dimension and added it to the dimensionOrder map,
-           * otherwise index is null. Since dims is initialized based on the size of dimensionOrder on each call to add,
-           * it must have been added to dimensionOrder during this InputRow.
-           *
-           * if we found an index for this dimension it means we've seen it already. If !(index > dims.length) then
-           * we saw it on a previous input row (this its safe to index into dims). If we found a value in
-           * the dims array for this index, it means we have seen this dimension already on this input row.
-           */
-          throw new ISE("Dimension[%s] occurred more than once in InputRow", dimension);
-        } else {
-          dims[desc.getIndex()] = dimsKey;
-        }
+    for (String dimension : rowDimensions) {
+      if (Strings.isNullOrEmpty(dimension)) {
+        continue;
       }
-    }
 
-    if (overflow != null) {
-      // Merge overflow and non-overflow
-      Object[] newDims = new Object[dims.length + overflow.size()];
-      System.arraycopy(dims, 0, newDims, 0, dims.length);
-      for (int i = 0; i < overflow.size(); ++i) {
-        newDims[dims.length + i] = overflow.get(i);
+      ColumnCapabilitiesImpl capabilities;
+      DimensionDesc desc = dimensionDescs.get(dimension);
+      if (desc != null) {
+        capabilities = desc.getCapabilities();
+      } else {
+        capabilities = columnCapabilities.get(dimension);
+        if (capabilities == null) {
+          capabilities = new ColumnCapabilitiesImpl();
+          // For schemaless type discovery, assume everything is a String for now, can change later.
+          capabilities.setType(ValueType.STRING);
+          capabilities.setDictionaryEncoded(true);
+          capabilities.setHasBitmapIndexes(true);
+          columnCapabilities.putIfAbsent(dimension, capabilities);  // eranmeir - can skip the above null checking as it is done by putIfAbsent
+        }
+        DimensionHandler handler = DimensionHandlerUtils.getHandlerFromCapabilities(dimension, capabilities, null);
+        desc = addNewDimension(dimension, capabilities, handler);
       }
-      dims = newDims;
+      DimensionHandler handler = desc.getHandler();
+      DimensionIndexer indexer = desc.getIndexer();
+      Object dimsKey = null;
+      try {
+        dimsKey = indexer.processRowValsToUnsortedEncodedKeyComponent(
+            row.getRaw(dimension),
+            true
+        );
+      }
+      catch (ParseException pe) {
+        parseExceptionMessages.add(pe.getMessage());
+      }
+      dimsKeySize += indexer.estimateEncodedKeyComponentSize(dimsKey);
+      // Set column capabilities as data is coming in
+      if (!capabilities.hasMultipleValues() &&
+          dimsKey != null &&
+          handler.getLengthOfEncodedKeyComponent(dimsKey) > 1) {
+        capabilities.setHasMultipleValues(true);
+      }
+
+      if (rowDims.putIfAbsent(desc.getIndex(), dimsKey) != null) {
+        // If the dims map already contains a mapping at this index, it means we have seen this dimension already on this input row.
+        throw new ISE("Dimension[%s] occurred more than once in InputRow", dimension);
+      }
     }
 
     long truncated = 0;
     if (row.getTimestamp() != null) {
       truncated = gran.bucketStart(row.getTimestamp()).getMillis();
     }
+
+    Object[] dims = new Object[dimensionDescsList.size()];
+    rowDims.keySet().forEach(descIndex -> dims[descIndex] = rowDims.get(descIndex));
+
     IncrementalIndexRow incrementalIndexRow = IncrementalIndexRow.createTimeAndDimswithDimsKeySize(
         Math.max(truncated, minTimestamp),
         dims,
@@ -838,24 +813,18 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
 
   public List<String> getDimensionNames()
   {
-    synchronized (dimensionDescs) {
       return ImmutableList.copyOf(dimensionDescs.keySet());
-    }
   }
 
   public List<DimensionDesc> getDimensions()
   {
-    synchronized (dimensionDescs) {
       return ImmutableList.copyOf(dimensionDescs.values());
-    }
   }
 
   @Nullable
   public DimensionDesc getDimension(String dimension)
   {
-    synchronized (dimensionDescs) {
       return dimensionDescs.get(dimension);
-    }
   }
 
   @Nullable
@@ -915,9 +884,7 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
 
   public List<String> getDimensionOrder()
   {
-    synchronized (dimensionDescs) {
       return ImmutableList.copyOf(dimensionDescs.keySet());
-    }
   }
 
   private ColumnCapabilitiesImpl makeCapabilitiesFromValueType(ValueType type)
@@ -939,7 +906,6 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
       Map<String, ColumnCapabilitiesImpl> oldColumnCapabilities
   )
   {
-    synchronized (dimensionDescs) {
       if (!dimensionDescs.isEmpty()) {
         throw new ISE("Cannot load dimension order when existing order[%s] is not empty.", dimensionDescs.keySet());
       }
@@ -951,16 +917,26 @@ public abstract class IncrementalIndex<AggregatorType> extends AbstractIndex imp
           addNewDimension(dim, capabilities, handler);
         }
       }
-    }
   }
 
   @GuardedBy("dimensionDescs")
   private DimensionDesc addNewDimension(String dim, ColumnCapabilitiesImpl capabilities, DimensionHandler handler)
   {
-    DimensionDesc desc = new DimensionDesc(dimensionDescs.size(), dim, capabilities, handler);
-    dimensionDescs.put(dim, desc);
-    dimensionDescsList.add(desc);
-    return desc;
+    /*
+     * dimensionDescs is a concurrent map, so size() isn't atomic. Since this method is synchronized,
+     * dimensionDescsList only increases in size when new dimension descs are added, so we can instead use
+     * dimensionDescsList.size(), which is faster.
+     */
+   synchronized (dimensionDescs) {
+       // eranmeir - GuardedBy doesn't actually synchronize
+       DimensionDesc desc = dimensionDescs.get(dim);
+       if (desc == null) {
+           desc = new DimensionDesc(dimensionDescsList.size(), dim, capabilities, handler);
+           dimensionDescs.put(dim, desc);
+           dimensionDescsList.add(desc);
+       }
+      return desc;
+   }
   }
 
   public List<String> getMetricNames()
