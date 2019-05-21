@@ -16,23 +16,44 @@
  * limitations under the License.
  */
 
+import { Alert, Button, ButtonGroup, Icon, Intent, Label, Menu, MenuDivider, MenuItem, Popover, Position } from '@blueprintjs/core';
+import { IconNames } from '@blueprintjs/icons';
 import axios from 'axios';
 import * as React from 'react';
-import * as classNames from 'classnames';
-import ReactTable from "react-table";
-import { Filter } from "react-table";
-import { Button, Intent, Alert } from "@blueprintjs/core";
-import { ButtonGroup, Label, IconNames } from "../components/filler";
-import { addFilter, QueryManager, getDruidErrorMessage, countBy, formatDuration, queryDruidSql } from "../utils";
-import { AsyncActionDialog } from "../dialogs/async-action-dialog";
-import { SpecDialog } from "../dialogs/spec-dialog";
+import ReactTable from 'react-table';
+import { Filter } from 'react-table';
+
+import { ActionCell } from '../components/action-cell';
+import { TableColumnSelection } from '../components/table-column-selection';
+import { ViewControlBar } from '../components/view-control-bar';
+import { AsyncActionDialog } from '../dialogs/async-action-dialog';
+import { SpecDialog } from '../dialogs/spec-dialog';
+import { SupervisorTableActionDialog } from '../dialogs/supervisor-table-action-dialog';
+import { TaskTableActionDialog } from '../dialogs/task-table-action-dialog';
 import { AppToaster } from '../singletons/toaster';
-import "./tasks-view.scss";
+import {
+  addFilter,
+  booleanCustomTableFilter,
+  countBy,
+  formatDuration,
+  getDruidErrorMessage, LocalStorageKeys,
+  queryDruidSql,
+  QueryManager, TableColumnSelectionHandler
+} from '../utils';
+import { BasicAction, basicActionsToMenu } from '../utils/basic-action';
+
+import './tasks-view.scss';
+
+const supervisorTableColumns: string[] = ['Datasource', 'Type', 'Topic/Stream', 'Status', 'Actions'];
+const taskTableColumns: string[] = ['Task ID', 'Type', 'Datasource', 'Created time', 'Status', 'Duration', 'Actions'];
 
 export interface TasksViewProps extends React.Props<any> {
   taskId: string | null;
+  openDialog: string | null;
   goToSql: (initSql: string) => void;
   goToMiddleManager: (middleManager: string) => void;
+  goToLoadDataView: () => void;
+  noSqlMode: boolean;
 }
 
 export interface TasksViewState {
@@ -55,7 +76,30 @@ export interface TasksViewState {
 
   supervisorSpecDialogOpen: boolean;
   taskSpecDialogOpen: boolean;
+  initSpec: any;
   alertErrorMsg: string | null;
+
+  taskTableActionDialogId: string | null;
+  taskTableActionDialogActions: BasicAction[];
+  supervisorTableActionDialogId: string | null;
+  supervisorTableActionDialogActions: BasicAction[];
+}
+
+interface TaskQueryResultRow {
+  created_time: string;
+  datasource: string;
+  duration: number;
+  error_msg: string | null;
+  location: string | null;
+  rank: number;
+  status: string;
+  task_id: string;
+  type: string;
+}
+
+interface SupervisorQueryResultRow {
+  id: string;
+  spec: any;
 }
 
 function statusToColor(status: string): string {
@@ -70,8 +114,11 @@ function statusToColor(status: string): string {
 }
 
 export class TasksView extends React.Component<TasksViewProps, TasksViewState> {
-  private supervisorQueryManager: QueryManager<string, any[]>;
-  private taskQueryManager: QueryManager<string, any[]>;
+  private supervisorQueryManager: QueryManager<string, SupervisorQueryResultRow[]>;
+  private taskQueryManager: QueryManager<string, TaskQueryResultRow[]>;
+  private supervisorTableColumnSelectionHandler: TableColumnSelectionHandler;
+  private taskTableColumnSelectionHandler: TableColumnSelectionHandler;
+  static statusRanking: Record<string, number> = {RUNNING: 4, PENDING: 3, WAITING: 2, SUCCESS: 1, FAILED: 1};
 
   constructor(props: TasksViewProps, context: any) {
     super(props, context);
@@ -93,16 +140,47 @@ export class TasksView extends React.Component<TasksViewProps, TasksViewState> {
 
       killTaskId: null,
 
-      supervisorSpecDialogOpen: false,
-      taskSpecDialogOpen: false,
-      alertErrorMsg: null
+      supervisorSpecDialogOpen: props.openDialog === 'supervisor',
+      taskSpecDialogOpen: props.openDialog === 'task',
+      initSpec: null,
+      alertErrorMsg: null,
+
+      taskTableActionDialogId: null,
+      taskTableActionDialogActions: [],
+      supervisorTableActionDialogId: null,
+      supervisorTableActionDialogActions: []
     };
+
+    this.supervisorTableColumnSelectionHandler = new TableColumnSelectionHandler(
+      LocalStorageKeys.SUPERVISOR_TABLE_COLUMN_SELECTION, () => this.setState({})
+    );
+
+    this.taskTableColumnSelectionHandler = new TableColumnSelectionHandler(
+      LocalStorageKeys.TASK_TABLE_COLUMN_SELECTION, () => this.setState({})
+    );
+  }
+
+  static parseTasks = (data: any[]): TaskQueryResultRow[] => {
+    return data.map((d: any) => {
+      return {
+        created_time: d.createdTime,
+        datasource: d.dataSource,
+        duration: d.duration ? d.duration : 0,
+        error_msg: d.errorMsg,
+        location: d.location.host ? `${d.location.host}:${d.location.port}` : null,
+        rank: (TasksView.statusRanking as any)[d.statusCode === 'RUNNING' ? d.runnerStatusCode : d.statusCode],
+        status: d.statusCode === 'RUNNING' ? d.runnerStatusCode : d.statusCode,
+        task_id: d.id,
+        type: d.typTasksView
+      };
+    });
   }
 
   componentDidMount(): void {
+    const { noSqlMode } = this.props;
     this.supervisorQueryManager = new QueryManager({
       processQuery: async (query: string) => {
-        const resp = await axios.get("/druid/indexer/v1/supervisor?full")
+        const resp = await axios.get('/druid/indexer/v1/supervisor?full');
         return resp.data;
       },
       onStateChange: ({ result, loading, error }) => {
@@ -118,7 +196,16 @@ export class TasksView extends React.Component<TasksViewProps, TasksViewState> {
 
     this.taskQueryManager = new QueryManager({
       processQuery: async (query: string) => {
-        return await queryDruidSql({ query });
+        if (!noSqlMode) {
+          return await queryDruidSql({ query });
+        } else {
+          const taskEndpoints: string[] = ['completeTasks', 'runningTasks', 'waitingTasks', 'pendingTasks'];
+          const result: TaskQueryResultRow[][] = await Promise.all(taskEndpoints.map(async (endpoint: string) => {
+            const resp = await axios.get(`/druid/indexer/v1/${endpoint}`);
+            return TasksView.parseTasks(resp.data);
+          }));
+          return [].concat.apply([], result);
+        }
       },
       onStateChange: ({ result, loading, error }) => {
         this.setState({
@@ -145,6 +232,7 @@ export class TasksView extends React.Component<TasksViewProps, TasksViewState> {
   "location", "duration", "error_msg"
 FROM sys.tasks
 ORDER BY "rank" DESC, "created_time" DESC`);
+
   }
 
   componentWillUnmount(): void {
@@ -152,7 +240,15 @@ ORDER BY "rank" DESC, "created_time" DESC`);
     this.taskQueryManager.terminate();
   }
 
-  private async submitSupervisor(spec: JSON) {
+  private closeSpecDialogs = () => {
+    this.setState({
+      supervisorSpecDialogOpen: false,
+      taskSpecDialogOpen: false,
+      initSpec: null
+    });
+  }
+
+  private submitSupervisor = async (spec: JSON) => {
     try {
       await axios.post('/druid/indexer/v1/supervisor', spec);
     } catch (e) {
@@ -170,7 +266,7 @@ ORDER BY "rank" DESC, "created_time" DESC`);
     this.supervisorQueryManager.rerunLastQuery();
   }
 
-  private async submitTask(spec: JSON) {
+  private submitTask = async (spec: JSON) => {
     try {
       await axios.post('/druid/indexer/v1/task', spec);
     } catch (e) {
@@ -186,6 +282,27 @@ ORDER BY "rank" DESC, "created_time" DESC`);
       intent: Intent.SUCCESS
     });
     this.taskQueryManager.rerunLastQuery();
+  }
+
+  private getSupervisorActions(id: string, supervisorSuspended: boolean): BasicAction[] {
+    return [
+      {
+        icon: IconNames.STEP_BACKWARD,
+        title: 'Reset',
+        onAction: () => this.setState({ resetSupervisorId: id })
+      },
+      {
+        icon: supervisorSuspended ? IconNames.PLAY : IconNames.PAUSE,
+        title: supervisorSuspended ? 'Resume' : 'Suspend',
+        onAction: () => supervisorSuspended ? this.setState({ resumeSupervisorId: id }) : this.setState({ suspendSupervisorId: id })
+      },
+      {
+        icon: IconNames.CROSS,
+        title: 'Terminate',
+        intent: Intent.DANGER,
+        onAction: () => this.setState({ terminateSupervisorId: id })
+      }
+    ];
   }
 
   renderResumeSupervisorAction() {
@@ -269,7 +386,7 @@ ORDER BY "rank" DESC, "created_time" DESC`);
     return <AsyncActionDialog
       action={
         terminateSupervisorId ? async () => {
-          const resp = await axios.post(`/druid/indexer/v1/supervisor/${terminateSupervisorId}/reset`, {});
+          const resp = await axios.post(`/druid/indexer/v1/supervisor/${terminateSupervisorId}/terminate`, {});
           return resp.data;
         } : null
       }
@@ -293,19 +410,21 @@ ORDER BY "rank" DESC, "created_time" DESC`);
 
   renderSupervisorTable() {
     const { supervisors, supervisorsLoading, supervisorsError } = this.state;
+    const { supervisorTableColumnSelectionHandler } = this;
 
     return <>
       <ReactTable
         data={supervisors || []}
         loading={supervisorsLoading}
         noDataText={!supervisorsLoading && supervisors && !supervisors.length ? 'No supervisors' : (supervisorsError || '')}
-        filterable={true}
+        filterable
         columns={[
           {
-            Header: "Datasource",
+            Header: 'Datasource',
             id: 'datasource',
-            accessor: "id",
-            width: 300
+            accessor: 'id',
+            width: 300,
+            show: supervisorTableColumnSelectionHandler.showColumn('Datasource')
           },
           {
             Header: 'Type',
@@ -316,7 +435,8 @@ ORDER BY "rank" DESC, "created_time" DESC`);
               const { tuningConfig } = spec;
               if (!tuningConfig) return '';
               return tuningConfig.type;
-            }
+            },
+            show: supervisorTableColumnSelectionHandler.showColumn('Type')
           },
           {
             Header: 'Topic/Stream',
@@ -327,10 +447,11 @@ ORDER BY "rank" DESC, "created_time" DESC`);
               const { ioConfig } = spec;
               if (!ioConfig) return '';
               return ioConfig.topic || ioConfig.stream || '';
-            }
+            },
+            show: supervisorTableColumnSelectionHandler.showColumn('Topic/Stream')
           },
           {
-            Header: "Status",
+            Header: 'Status',
             id: 'status',
             accessor: (row) => row.spec.suspended ? 'Suspended' : 'Running',
             Cell: row => {
@@ -338,36 +459,46 @@ ORDER BY "rank" DESC, "created_time" DESC`);
               return <span>
                 <span
                   style={{ color: value === 'Suspended' ? '#d58512' : '#2167d5' }}
-                >&#x25cf;&nbsp;</span>
+                >
+                  &#x25cf;&nbsp;
+                </span>
                 {value}
               </span>;
-            }
+            },
+            show: supervisorTableColumnSelectionHandler.showColumn('Status')
           },
           {
             Header: 'Actions',
             id: 'actions',
             accessor: 'id',
-            width: 420,
+            width: 70,
             filterable: false,
             Cell: row => {
               const id = row.value;
-              const suspendResume = row.original.spec.suspended ?
-                <a onClick={() => this.setState({ resumeSupervisorId: id })}>Resume</a> :
-                <a onClick={() => this.setState({ suspendSupervisorId: id })}>Suspend</a>;
+              const supervisorSuspended = row.original.spec.suspended;
+              const supervisorActions = this.getSupervisorActions(id, supervisorSuspended);
+              const supervisorMenu = basicActionsToMenu(supervisorActions);
 
-              return <div>
-                <a href={`/druid/indexer/v1/supervisor/${id}`} target="_blank">Payload</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/supervisor/${id}/status`} target="_blank">Status</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/supervisor/${id}/stats`} target="_blank">Stats</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/supervisor/${id}/history`} target="_blank">History</a>&nbsp;&nbsp;&nbsp;
-                {suspendResume}&nbsp;&nbsp;&nbsp;
-                <a onClick={() => this.setState({ resetSupervisorId: id })}>Reset</a>&nbsp;&nbsp;&nbsp;
-                <a onClick={() => this.setState({ terminateSupervisorId: id })}>Terminate</a>
-              </div>
-            }
+              return <ActionCell>
+                <Icon
+                  icon={IconNames.SEARCH_TEMPLATE}
+                  onClick={() => this.setState({
+                    supervisorTableActionDialogId: id,
+                    supervisorTableActionDialogActions: supervisorActions
+                  })}
+                />
+                {
+                  supervisorMenu &&
+                  <Popover content={supervisorMenu} position={Position.BOTTOM_RIGHT}>
+                    <Icon icon={IconNames.WRENCH}/>
+                  </Popover>
+                }
+              </ActionCell>;
+            },
+            show: supervisorTableColumnSelectionHandler.showColumn('Actions')
           }
         ]}
-        defaultPageSize={10}
+        defaultPageSize={5}
         className="-striped -highlight"
       />
       {this.renderResumeSupervisorAction()}
@@ -378,6 +509,18 @@ ORDER BY "rank" DESC, "created_time" DESC`);
   }
 
   // --------------------------------------
+
+  private getTaskActions(id: string, status: string): BasicAction[] {
+    if (status !== 'RUNNING' && status !== 'WAITING' && status !== 'PENDING') return [];
+    return [
+      {
+        icon: IconNames.CROSS,
+        title: 'Kill',
+        intent: Intent.DANGER,
+        onAction: () => this.setState({ killTaskId: id })
+      }
+    ];
+  }
 
   renderKillTaskAction() {
     const { killTaskId } = this.state;
@@ -407,53 +550,58 @@ ORDER BY "rank" DESC, "created_time" DESC`);
   renderTaskTable() {
     const { goToMiddleManager } = this.props;
     const { tasks, tasksLoading, tasksError, taskFilter, groupTasksBy } = this.state;
+    const { taskTableColumnSelectionHandler } = this;
 
     return <>
       <ReactTable
         data={tasks || []}
         loading={tasksLoading}
         noDataText={!tasksLoading && tasks && !tasks.length ? 'No tasks' : (tasksError || '')}
-        filterable={true}
+        filterable
         filtered={taskFilter}
         onFilteredChange={(filtered, column) => {
           this.setState({ taskFilter: filtered });
         }}
-        defaultSorted={[{id: "status", desc: true}]}
+        defaultSorted={[{id: 'status', desc: true}]}
         pivotBy={groupTasksBy ? [groupTasksBy] : []}
         columns={[
           {
-            Header: "Task ID",
-            accessor: "task_id",
+            Header: 'Task ID',
+            accessor: 'task_id',
             width: 300,
-            Aggregated: row => ''
+            Aggregated: row => '',
+            show: taskTableColumnSelectionHandler.showColumn('Task ID')
           },
           {
-            Header: "Type",
-            accessor: "type",
+            Header: 'Type',
+            accessor: 'type',
             Cell: row => {
               const value = row.value;
-              return <a onClick={() => { this.setState({ taskFilter: addFilter(taskFilter, 'type', value) }) }}>{value}</a>
-            }
+              return <a onClick={() => { this.setState({ taskFilter: addFilter(taskFilter, 'type', value) }); }}>{value}</a>;
+            },
+            show: taskTableColumnSelectionHandler.showColumn('Type')
           },
           {
-            Header: "Datasource",
-            accessor: "datasource",
+            Header: 'Datasource',
+            accessor: 'datasource',
             Cell: row => {
               const value = row.value;
-              return <a onClick={() => { this.setState({ taskFilter: addFilter(taskFilter, 'datasource', value) }) }}>{value}</a>
-            }
+              return <a onClick={() => { this.setState({ taskFilter: addFilter(taskFilter, 'datasource', value) }); }}>{value}</a>;
+            },
+            show: taskTableColumnSelectionHandler.showColumn('Datasource')
           },
           {
-            Header: "Created time",
-            accessor: "created_time",
+            Header: 'Created time',
+            accessor: 'created_time',
             width: 120,
-            Aggregated: row => ''
+            Aggregated: row => '',
+            show: taskTableColumnSelectionHandler.showColumn('Created time')
           },
           {
-            Header: "Status",
-            id: "status",
+            Header: 'Status',
+            id: 'status',
             width: 110,
-            accessor: (row) => `${row.rank}_${row.created_time}_${row.status}`,
+            accessor: (row) => ({ status: row.status, created_time: row.created_time, toString: () => row.status }),
             Cell: row => {
               if (row.aggregated) return '';
               const { status, location } = row.original;
@@ -462,51 +610,73 @@ ORDER BY "rank" DESC, "created_time" DESC`);
               return <span>
                 <span
                   style={{ color: statusToColor(status) }}
-                >&#x25cf;&nbsp;</span>
-                { status }
-                { location && <a onClick={() => goToMiddleManager(locationHostname)} title={`Go to: ${locationHostname}`}>&nbsp;&#x279A;</a> }
-                { errorMsg && <a onClick={() => this.setState({ alertErrorMsg: errorMsg })} title={errorMsg}>&nbsp;?</a> }
+                >
+                  &#x25cf;&nbsp;
+                </span>
+                {status}
+                {location && <a onClick={() => goToMiddleManager(locationHostname)} title={`Go to: ${locationHostname}`}>&nbsp;&#x279A;</a>}
+                {errorMsg && <a onClick={() => this.setState({ alertErrorMsg: errorMsg })} title={errorMsg}>&nbsp;?</a>}
               </span>;
             },
-            PivotValue: (opt) => {
-              const { subRows, value } = opt;
-              if (!subRows || !subRows.length) return '';
-              return `${subRows[0]._original['status']} (${subRows.length})`;
+            sortMethod: (d1, d2) => {
+              const typeofD1 = typeof d1;
+              const typeofD2 = typeof d2;
+              if (typeofD1 !== typeofD2) return 0;
+              switch (typeofD1) {
+                case 'string':
+                  return TasksView.statusRanking[d1] - TasksView.statusRanking[d2];
+
+                case 'object':
+                  return TasksView.statusRanking[d1.status] - TasksView.statusRanking[d2.status] || d1.created_time.localeCompare(d2.created_time);
+
+                default:
+                  return 0;
+              }
             },
-            Aggregated: (opt: any) => {
-              const { subRows, column } = opt;
-              const previewValues = subRows.filter((d: any) => typeof d[column.id] !== 'undefined').map((row: any) => row._original[column.id]);
-              const previewCount = countBy(previewValues);
-              return <span>{Object.keys(previewCount).sort().map(v => `${v} (${previewCount[v]})`).join(', ')}</span>;
-            }
+            filterMethod: (filter: Filter, row: any) => {
+              return booleanCustomTableFilter(filter, row.status.status);
+            },
+            show: taskTableColumnSelectionHandler.showColumn('Status')
           },
           {
-            Header: "Duration",
-            accessor: "duration",
+            Header: 'Duration',
+            accessor: 'duration',
             filterable: false,
             Cell: (row) => row.value > 0 ? formatDuration(row.value) : '',
-            Aggregated: () => ''
+            Aggregated: () => '',
+            show: taskTableColumnSelectionHandler.showColumn('Duration')
           },
           {
             Header: 'Actions',
             id: 'actions',
             accessor: 'task_id',
-            width: 360,
+            width: 70,
             filterable: false,
             Cell: row => {
               if (row.aggregated) return '';
               const id = row.value;
               const { status } = row.original;
-              return <div>
-                <a href={`/druid/indexer/v1/task/${id}`} target="_blank">Payload</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/task/${id}/status`} target="_blank">Status</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/task/${id}/reports`} target="_blank">Reports</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/task/${id}/log`} target="_blank">Log (all)</a>&nbsp;&nbsp;&nbsp;
-                <a href={`/druid/indexer/v1/task/${id}/log?offset=-8192`} target="_blank">Log (last 8kb)</a>&nbsp;&nbsp;&nbsp;
-                { (status === 'RUNNING' || status === 'WAITING' || status === 'PENDING') && <a onClick={() => this.setState({ killTaskId: id })}>Kill</a> }
-              </div>
+              const taskActions = this.getTaskActions(id, status);
+              const taskMenu = basicActionsToMenu(taskActions);
+
+              return <ActionCell>
+                <Icon
+                  icon={IconNames.SEARCH_TEMPLATE}
+                  onClick={() => this.setState({
+                    taskTableActionDialogId: id,
+                    taskTableActionDialogActions: taskActions
+                  })}
+                />
+                {
+                  taskMenu &&
+                  <Popover content={taskMenu} position={Position.BOTTOM_RIGHT}>
+                    <Icon icon={IconNames.WRENCH}/>
+                  </Popover>
+                }
+              </ActionCell>;
             },
-            Aggregated: row => ''
+            Aggregated: row => '',
+            show: taskTableColumnSelectionHandler.showColumn('Actions')
           }
         ]}
         defaultPageSize={20}
@@ -517,65 +687,92 @@ ORDER BY "rank" DESC, "created_time" DESC`);
   }
 
   render() {
-    const { goToSql } = this.props;
-    const { groupTasksBy, supervisorSpecDialogOpen, taskSpecDialogOpen, alertErrorMsg } = this.state;
+    const { goToSql, goToLoadDataView, noSqlMode } = this.props;
+    const { groupTasksBy, supervisorSpecDialogOpen, taskSpecDialogOpen, alertErrorMsg, taskTableActionDialogId, taskTableActionDialogActions, supervisorTableActionDialogId, supervisorTableActionDialogActions } = this.state;
+    const { supervisorTableColumnSelectionHandler, taskTableColumnSelectionHandler } = this;
+
+    const submitTaskMenu = <Menu>
+      <MenuItem
+        text="Raw JSON task"
+        onClick={() => this.setState({ taskSpecDialogOpen: true })}
+      />
+      <MenuItem
+        text="Go to data loader"
+        onClick={() => goToLoadDataView()}
+      />
+    </Menu>;
 
     return <div className="tasks-view app-view">
-      <div className="control-bar">
-        <div className="control-label">Supervisors</div>
+      <ViewControlBar label="Supervisors">
         <Button
-          iconName={IconNames.REFRESH}
+          icon={IconNames.REFRESH}
           text="Refresh"
           onClick={() => this.supervisorQueryManager.rerunLastQuery()}
         />
         <Button
-          iconName={IconNames.PLUS}
+          icon={IconNames.PLUS}
           text="Submit supervisor"
           onClick={() => this.setState({ supervisorSpecDialogOpen: true })}
         />
-      </div>
+        <TableColumnSelection
+          columns={supervisorTableColumns}
+          onChange={(column) => supervisorTableColumnSelectionHandler.changeTableColumnSelection(column)}
+          tableColumnsHidden={supervisorTableColumnSelectionHandler.hiddenColumns}
+        />
+      </ViewControlBar>
       {this.renderSupervisorTable()}
 
       <div className="control-separator"/>
 
-      <div className="control-bar">
-        <div className="control-label">Tasks</div>
+      <ViewControlBar label="Tasks">
         <Label>Group by</Label>
         <ButtonGroup>
-          <Button className={classNames({ 'pt-active': groupTasksBy === null })} onClick={() => this.setState({ groupTasksBy: null })}>None</Button>
-          <Button className={classNames({ 'pt-active': groupTasksBy === 'type' })} onClick={() => this.setState({ groupTasksBy: 'type' })}>Type</Button>
-          <Button className={classNames({ 'pt-active': groupTasksBy === 'datasource' })} onClick={() => this.setState({ groupTasksBy: 'datasource' })}>Datasource</Button>
-          <Button className={classNames({ 'pt-active': groupTasksBy === 'status' })} onClick={() => this.setState({ groupTasksBy: 'status' })}>Status</Button>
+          <Button active={groupTasksBy === null} onClick={() => this.setState({ groupTasksBy: null })}>None</Button>
+          <Button active={groupTasksBy === 'type'} onClick={() => this.setState({ groupTasksBy: 'type' })}>Type</Button>
+          <Button active={groupTasksBy === 'datasource'} onClick={() => this.setState({ groupTasksBy: 'datasource' })}>Datasource</Button>
+          <Button active={groupTasksBy === 'status'} onClick={() => this.setState({ groupTasksBy: 'status' })}>Status</Button>
         </ButtonGroup>
         <Button
-          iconName={IconNames.REFRESH}
+          icon={IconNames.REFRESH}
           text="Refresh"
           onClick={() => this.taskQueryManager.rerunLastQuery()}
         />
-        <Button
-          iconName={IconNames.APPLICATION}
-          text="Go to SQL"
-          onClick={() => goToSql(this.taskQueryManager.getLastQuery())}
+        {
+          !noSqlMode &&
+          <Button
+            icon={IconNames.APPLICATION}
+            text="Go to SQL"
+            onClick={() => goToSql(this.taskQueryManager.getLastQuery())}
+          />
+        }
+        <Popover content={submitTaskMenu} position={Position.BOTTOM_LEFT}>
+          <Button icon={IconNames.PLUS} text="Submit task"/>
+        </Popover>
+        <TableColumnSelection
+          columns={taskTableColumns}
+          onChange={(column) => taskTableColumnSelectionHandler.changeTableColumnSelection(column)}
+          tableColumnsHidden={taskTableColumnSelectionHandler.hiddenColumns}
         />
-        <Button
-          iconName={IconNames.PLUS}
-          text="Submit task"
-          onClick={() => this.setState({ taskSpecDialogOpen: true })}
-        />
-      </div>
+      </ViewControlBar>
       {this.renderTaskTable()}
-      { supervisorSpecDialogOpen ? <SpecDialog
-        onClose={() => this.setState({ supervisorSpecDialogOpen: false })}
-        onSubmit={this.submitSupervisor}
-        title="Submit supervisor"
-      /> : null }
-      { taskSpecDialogOpen ? <SpecDialog
-        onClose={() => this.setState({ taskSpecDialogOpen: false })}
-        onSubmit={this.submitTask}
-        title="Submit task"
-      /> : null }
+      {
+        supervisorSpecDialogOpen &&
+        <SpecDialog
+          onClose={this.closeSpecDialogs}
+          onSubmit={this.submitSupervisor}
+          title="Submit supervisor"
+        />
+      }
+      {
+        taskSpecDialogOpen &&
+        <SpecDialog
+          onClose={this.closeSpecDialogs}
+          onSubmit={this.submitTask}
+          title="Submit task"
+        />
+      }
       <Alert
-        iconName={IconNames.ERROR}
+        icon={IconNames.ERROR}
         intent={Intent.PRIMARY}
         isOpen={Boolean(alertErrorMsg)}
         confirmButtonText="OK"
@@ -583,7 +780,24 @@ ORDER BY "rank" DESC, "created_time" DESC`);
       >
         <p>{alertErrorMsg}</p>
       </Alert>
-    </div>
+      {
+        supervisorTableActionDialogId &&
+        <SupervisorTableActionDialog
+          isOpen
+          supervisorId={supervisorTableActionDialogId}
+          actions={supervisorTableActionDialogActions}
+          onClose={() => this.setState({supervisorTableActionDialogId: null})}
+        />
+      }
+      {
+        taskTableActionDialogId &&
+        <TaskTableActionDialog
+          isOpen
+          taskId={taskTableActionDialogId}
+          actions={taskTableActionDialogActions}
+          onClose={() => this.setState({taskTableActionDialogId: null})}
+        />
+      }
+    </div>;
   }
 }
-

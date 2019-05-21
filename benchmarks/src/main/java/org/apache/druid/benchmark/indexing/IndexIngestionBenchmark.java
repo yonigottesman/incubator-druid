@@ -40,6 +40,7 @@ import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
@@ -60,6 +61,9 @@ public class IndexIngestionBenchmark
 
   @Param({"true", "false"})
   private boolean rollup;
+
+  @Param({"onheap", "oak"})
+  private String indexType;
 
   private static final Logger log = new Logger(IndexIngestionBenchmark.class);
   private static final int RNG_SEED = 9999;
@@ -98,9 +102,15 @@ public class IndexIngestionBenchmark
     incIndex = makeIncIndex();
   }
 
+  @TearDown(Level.Invocation)
+  public void tearDown()
+  {
+    incIndex.close();
+  }
+
   private IncrementalIndex makeIncIndex()
   {
-    return new IncrementalIndex.Builder()
+    IncrementalIndex.Builder builder = new IncrementalIndex.Builder()
         .setIndexSchema(
             new IncrementalIndexSchema.Builder()
                 .withMetrics(schemaInfo.getAggsArray())
@@ -108,8 +118,14 @@ public class IndexIngestionBenchmark
                 .build()
         )
         .setReportParseExceptions(false)
-        .setMaxRowCount(rowsPerSegment * 2)
-        .buildOnheap();
+        .setMaxRowCount(rowsPerSegment * 2);
+    switch (indexType) {
+      case "onheap":
+        return builder.buildOnheap();
+      case "oak":
+        return builder.buildOak();
+    }
+    return null;
   }
 
   @Benchmark
@@ -123,4 +139,5 @@ public class IndexIngestionBenchmark
       blackhole.consume(rv);
     }
   }
+
 }

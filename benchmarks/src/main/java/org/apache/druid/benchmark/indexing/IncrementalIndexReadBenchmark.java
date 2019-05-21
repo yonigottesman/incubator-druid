@@ -57,8 +57,13 @@ import org.openjdk.jmh.annotations.Param;
 import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
+import org.openjdk.jmh.runner.Runner;
+import org.openjdk.jmh.runner.RunnerException;
+import org.openjdk.jmh.runner.options.Options;
+import org.openjdk.jmh.runner.options.OptionsBuilder;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -81,6 +86,9 @@ public class IncrementalIndexReadBenchmark
 
   @Param({"true", "false"})
   private boolean rollup;
+
+  @Param({"oak", "onheap"})
+  private String indexType;
 
   private static final Logger log = new Logger(IncrementalIndexReadBenchmark.class);
   private static final int RNG_SEED = 9999;
@@ -118,9 +126,15 @@ public class IncrementalIndexReadBenchmark
 
   }
 
+  @TearDown
+  public void tearDown()
+  {
+    incIndex.close();
+  }
+
   private IncrementalIndex makeIncIndex()
   {
-    return new IncrementalIndex.Builder()
+    IncrementalIndex.Builder builder = new IncrementalIndex.Builder()
         .setIndexSchema(
             new IncrementalIndexSchema.Builder()
                 .withMetrics(schemaInfo.getAggsArray())
@@ -128,8 +142,14 @@ public class IncrementalIndexReadBenchmark
                 .build()
         )
         .setReportParseExceptions(false)
-        .setMaxRowCount(rowsPerSegment)
-        .buildOnheap();
+        .setMaxRowCount(rowsPerSegment);
+    switch (indexType) {
+      case "onheap":
+        return builder.buildOnheap();
+      case "oak":
+        return builder.buildOak();
+    }
+    return null;
   }
 
   @Benchmark
@@ -195,7 +215,7 @@ public class IncrementalIndexReadBenchmark
   private Sequence<Cursor> makeCursors(IncrementalIndexStorageAdapter sa, DimFilter filter)
   {
     return sa.makeCursors(
-        filter.toFilter(),
+        filter == null ? null : filter.toFilter(),
         schemaInfo.getDataInterval(),
         VirtualColumns.EMPTY,
         Granularities.ALL,
@@ -208,4 +228,18 @@ public class IncrementalIndexReadBenchmark
   {
     return cursor.getColumnSelectorFactory().makeDimensionSelector(new DefaultDimensionSpec(name, null));
   }
+
+  public static void main(String[] args) throws RunnerException
+  {
+    Options opt = new OptionsBuilder()
+            .include(IncrementalIndexReadBenchmark.class.getSimpleName())
+            .forks(0)
+            .threads(1)
+            .param("indexType", "oak")
+            .build();
+
+    new Runner(opt).run();
+  }
+
+
 }

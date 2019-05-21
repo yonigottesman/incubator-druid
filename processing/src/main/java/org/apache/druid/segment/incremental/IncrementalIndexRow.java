@@ -23,6 +23,7 @@ import com.google.common.base.Function;
 import com.google.common.collect.Lists;
 import org.apache.druid.java.util.common.DateTimes;
 import org.apache.druid.segment.DimensionIndexer;
+import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import javax.annotation.Nullable;
 import java.lang.reflect.Array;
@@ -30,7 +31,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-public final class IncrementalIndexRow
+public class IncrementalIndexRow
 {
   public static final int EMPTY_ROW_INDEX = -1;
 
@@ -82,6 +83,15 @@ public final class IncrementalIndexRow
     this.dimsKeySize = dimsKeySize;
   }
 
+  public IncrementalIndexRow(int timestamp, List<IncrementalIndex.DimensionDesc> dimensionDescsList)
+  {
+    // Used by OakIncrementalIndex, probablly better to create an interface for both classes
+    // but I tried to avoid many code changes.
+    this.timestamp = timestamp;
+    dims = null;
+    this.dimensionDescsList = dimensionDescsList;
+  }
+
   static IncrementalIndexRow createTimeAndDimswithDimsKeySize(
       long timestamp,
       Object[] dims,
@@ -97,10 +107,19 @@ public final class IncrementalIndexRow
     return timestamp;
   }
 
-  public Object[] getDims()
+  public Object getDim(int index)
   {
-    return dims;
+    if (dims == null || index >= dims.length) {
+      return null;
+    }
+    return dims[index];
   }
+
+  public int getDimsLength()
+  {
+    return dims == null ? 0 : dims.length;
+  }
+
 
   public int getRowIndex()
   {
@@ -187,5 +206,34 @@ public final class IncrementalIndexRow
       hash = 31 * hash + indexer.getUnsortedEncodedKeyComponentHashCode(dims[i]);
     }
     return hash;
+  }
+
+  boolean isDimNull(int index)
+  {
+    if (dims == null || index >= dims.length || dims[index] == null) {
+      return true;
+    } else {
+      return false;
+    }
+  }
+
+  public boolean avoidDoubleCopyStringDim()
+  {
+    return false;
+  }
+
+  public int stringDimSize(int dimIndex)
+  {
+    if (dims == null || dimIndex >= dims.length || dims[dimIndex] == null) {
+      return 0;
+    }
+
+    return ((int[]) dims[dimIndex]).length;
+  }
+
+  public int copyStringDim(int dimIndex, int[] expansion)
+  {
+    // No reason to get here
+    throw new NotImplementedException();
   }
 }

@@ -443,46 +443,52 @@ public class StringDimensionIndexer implements DimensionIndexer<Integer, int[], 
       @Override
       public IndexedInts getRow()
       {
-        final Object[] dims = currEntry.get().getDims();
 
-        int[] indices;
-        if (dimIndex < dims.length) {
-          indices = (int[]) dims[dimIndex];
+        IncrementalIndexRow key = currEntry.get();
+
+        if (key.avoidDoubleCopyStringDim()) {
+          // incase of oak the key is serialized so its a wast to copy array twice.
+          indexedInts.setValues(key, dimIndex);
         } else {
-          indices = null;
-        }
-
-        int[] row = null;
-        int rowSize = 0;
-
-        // usually due to currEntry's rowIndex is smaller than the row's rowIndex in which this dim first appears
-        if (indices == null || indices.length == 0) {
-          if (hasMultipleValues) {
-            row = IntArrays.EMPTY_ARRAY;
-            rowSize = 0;
+          int[] indices;
+          if (dimIndex < key.getDimsLength()) {
+            indices = (int[]) currEntry.get().getDim(dimIndex);
           } else {
-            final int nullId = getEncodedValue(null, false);
-            if (nullId > -1) {
-              if (nullIdIntArray == null) {
-                nullIdIntArray = new int[]{nullId};
-              }
-              row = nullIdIntArray;
-              rowSize = 1;
-            } else {
-              // doesn't contain nullId, then empty array is used
-              // Choose to use ArrayBasedIndexedInts later, instead of special "empty" IndexedInts, for monomorphism
+            indices = null;
+          }
+
+          int[] row = null;
+          int rowSize = 0;
+
+          // usually due to currEntry's rowIndex is smaller than the row's rowIndex in which this dim first appears
+          if (indices == null || indices.length == 0) {
+            if (hasMultipleValues) {
               row = IntArrays.EMPTY_ARRAY;
               rowSize = 0;
+            } else {
+              final int nullId = getEncodedValue(null, false);
+              if (nullId > -1) {
+                if (nullIdIntArray == null) {
+                  nullIdIntArray = new int[]{nullId};
+                }
+                row = nullIdIntArray;
+                rowSize = 1;
+              } else {
+                // doesn't contain nullId, then empty array is used
+                // Choose to use ArrayBasedIndexedInts later, instead of special "empty" IndexedInts, for monomorphism
+                row = IntArrays.EMPTY_ARRAY;
+                rowSize = 0;
+              }
             }
           }
-        }
 
-        if (row == null && indices != null && indices.length > 0) {
-          row = indices;
-          rowSize = indices.length;
-        }
+          if (row == null && indices != null && indices.length > 0) {
+            row = indices;
+            rowSize = indices.length;
+          }
 
-        indexedInts.setValues(row, rowSize);
+          indexedInts.setValues(row, rowSize);
+        }
         return indexedInts;
       }
 
@@ -497,12 +503,11 @@ public class StringDimensionIndexer implements DimensionIndexer<Integer, int[], 
               @Override
               public boolean matches()
               {
-                Object[] dims = currEntry.get().getDims();
-                if (dimIndex >= dims.length) {
+                if (dimIndex >= currEntry.get().getDimsLength()) {
                   return value == null;
                 }
 
-                int[] dimsInt = (int[]) dims[dimIndex];
+                int[] dimsInt = (int[]) currEntry.get().getDim(dimIndex);
                 if (dimsInt == null || dimsInt.length == 0) {
                   return value == null;
                 }
@@ -543,12 +548,11 @@ public class StringDimensionIndexer implements DimensionIndexer<Integer, int[], 
           @Override
           public boolean matches()
           {
-            Object[] dims = currEntry.get().getDims();
-            if (dimIndex >= dims.length) {
+            if (dimIndex >= currEntry.get().getDimsLength()) {
               return matchNull;
             }
 
-            int[] dimsInt = (int[]) dims[dimIndex];
+            int[] dimsInt = (int[]) currEntry.get().getDim(dimIndex);
             if (dimsInt == null || dimsInt.length == 0) {
               return matchNull;
             }
@@ -628,12 +632,12 @@ public class StringDimensionIndexer implements DimensionIndexer<Integer, int[], 
           return null;
         }
 
-        Object[] dims = key.getDims();
-        if (dimIndex >= dims.length) {
+        Object dim = key.getDim(dimIndex);
+        if (dim == null) {
           return null;
         }
 
-        return convertUnsortedEncodedKeyComponentToActualList((int[]) dims[dimIndex]);
+        return convertUnsortedEncodedKeyComponentToActualList((int[]) key.getDim(dimIndex));
       }
 
       @SuppressWarnings("deprecation")

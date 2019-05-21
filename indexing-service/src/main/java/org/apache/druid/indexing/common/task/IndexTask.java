@@ -1117,7 +1117,8 @@ public class IndexTask extends AbstractTask implements ChatHandler
         toolbox.getSegmentPusher(),
         toolbox.getObjectMapper(),
         toolbox.getIndexIO(),
-        toolbox.getIndexMergerV9()
+        toolbox.getIndexMergerV9(),
+        toolbox.isUseOak()
     );
   }
 
@@ -1430,6 +1431,28 @@ public class IndexTask extends AbstractTask implements ChatHandler
           reportParseExceptions,
           pushTimeout,
           dir,
+          segmentWriteOutMediumFactory,
+          logParseExceptions,
+          maxParseExceptions,
+          maxSavedParseExceptions
+      );
+    }
+
+    public IndexTuningConfig withMaxTotalRows(Long maxTotalRows)
+    {
+      return new IndexTuningConfig(
+          maxRowsPerSegment,
+          maxRowsInMemory,
+          maxBytesInMemory,
+          maxTotalRows,
+          numShards,
+          partitionDimensions,
+          indexSpec,
+          maxPendingPersists,
+          forceGuaranteedRollup,
+          reportParseExceptions,
+          pushTimeout,
+          basePersistDirectory,
           segmentWriteOutMediumFactory,
           logParseExceptions,
           maxParseExceptions,
