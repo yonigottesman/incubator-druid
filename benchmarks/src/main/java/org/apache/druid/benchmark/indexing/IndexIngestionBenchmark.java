@@ -19,6 +19,7 @@
 
 package org.apache.druid.benchmark.indexing;
 
+import io.netty.util.SuppressForbidden;
 import org.apache.druid.benchmark.datagen.BenchmarkDataGenerator;
 import org.apache.druid.benchmark.datagen.BenchmarkSchemaInfo;
 import org.apache.druid.benchmark.datagen.BenchmarkSchemas;
@@ -44,7 +45,10 @@ import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
+import java.lang.management.BufferPoolMXBean;
+import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 @State(Scope.Benchmark)
@@ -102,9 +106,23 @@ public class IndexIngestionBenchmark
     incIndex = makeIncIndex();
   }
 
+  private static String toMB(long init) {
+    return (Long.valueOf(init).doubleValue() / (1024 * 1024)) + " MB";
+  }
+
+  @SuppressForbidden(reason = "System#out")
   @TearDown(Level.Invocation)
   public void tearDown()
   {
+    long usedMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+    System.out.println("\n --- Java memory used: " + toMB(usedMemory) + " ---");
+    List<BufferPoolMXBean> pools = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class);
+    System.out.println(" --- Off-heap memory used: ");
+    for (BufferPoolMXBean pool : pools) {
+      System.out.println("Pool name: " + pool.getName() + ", pool count: " + pool.getCount());
+      System.out.println("memory used: " + toMB(pool.getMemoryUsed()) + ", total capacity: " + toMB(pool.getTotalCapacity()));
+    }
+    System.out.println("---\n");
     incIndex.close();
   }
 
