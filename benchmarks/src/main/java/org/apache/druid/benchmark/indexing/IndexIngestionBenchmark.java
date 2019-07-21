@@ -100,9 +100,20 @@ public class IndexIngestionBenchmark
     }
   }
 
+  @SuppressForbidden(reason = "System#out")
   @Setup(Level.Invocation)
   public void setup2()
   {
+    long usedMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
+    System.out.println("\nSETUP INVOCATION");
+    System.out.println(" --- Java memory used: " + toMB(usedMemory) + " ---");
+    List<BufferPoolMXBean> pools = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class);
+    System.out.println(" --- Off-heap memory used: ");
+    for (BufferPoolMXBean pool : pools) {
+      System.out.println("Pool name: " + pool.getName() + ", pool count: " + pool.getCount()
+          + " memory used: " + toMB(pool.getMemoryUsed()) + ", total capacity: " + toMB(pool.getTotalCapacity()));
+    }
+    System.out.println("---\n");
     incIndex = makeIncIndex();
   }
 
@@ -115,12 +126,13 @@ public class IndexIngestionBenchmark
   public void tearDown()
   {
     long usedMemory = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
-    System.out.println("\n --- Java memory used: " + toMB(usedMemory) + " ---");
+    System.out.println("\nTEAR DOWN INVOCATION");
+    System.out.println(" --- Java memory used: " + toMB(usedMemory) + " ---");
     List<BufferPoolMXBean> pools = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class);
     System.out.println(" --- Off-heap memory used: ");
     for (BufferPoolMXBean pool : pools) {
-      System.out.println("Pool name: " + pool.getName() + ", pool count: " + pool.getCount());
-      System.out.println("memory used: " + toMB(pool.getMemoryUsed()) + ", total capacity: " + toMB(pool.getTotalCapacity()));
+      System.out.println("Pool name: " + pool.getName() + ", pool count: " + pool.getCount()
+          + " memory used: " + toMB(pool.getMemoryUsed()) + ", total capacity: " + toMB(pool.getTotalCapacity()));
     }
     System.out.println("---\n");
     incIndex.close();
