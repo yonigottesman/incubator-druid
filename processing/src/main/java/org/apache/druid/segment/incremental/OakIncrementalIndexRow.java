@@ -141,7 +141,7 @@ public class OakIncrementalIndexRow extends IncrementalIndexRow
     if (expansion.length < arraySize) {
       expansion = new int[arraySize];
     }
-    dimensions.unsafeCopyBufferToIntArray(arrayIndex, expansion, arraySize);
+    // dimensions.unsafeCopyBufferToIntArray(arrayIndex, expansion, arraySize);
     return arraySize;
   }
 
